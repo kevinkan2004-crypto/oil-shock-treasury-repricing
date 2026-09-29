@@ -3,3 +3,5 @@
 __pycache__/
 .ipynb_checkpoints/
 .venv/
+# 中間檔，可由 prepare.py 重新產生
+data/prepared.csv

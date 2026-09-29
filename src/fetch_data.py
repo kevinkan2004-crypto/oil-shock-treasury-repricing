@@ -45,7 +45,15 @@ FRED_SERIES = {
     "DCOILBRENTEU": ("Brent 原油現貨價格", "USD/bbl"),
     "DCOILWTICO": ("WTI 原油現貨價格", "USD/bbl"),
     "NASDAQCOM": ("NASDAQ 綜合指數（景氣控制變數）", "index"),
+    # TIPS 相關序列（約 2003 年起），用於 breakeven 拆解
+    "DFII10": ("10年期 TIPS 實質殖利率", "%"),
+    "T10YIE": ("10年期通膨平衡率 (DGS10 - DFII10)", "%"),
+    "T5YIFR": ("5y5y 遠期通膨預期", "%"),
 }
+
+# 起始較晚的補充序列：不參與共同期間起點的判斷，起點之前顯示空白。
+# 否則整個資料集會被推到 2003 年，失去 1990 年的衝擊期間。
+LATE_START_SERIES = {"DFII10", "T10YIE", "T5YIFR"}
 
 # ACM 期限溢價檔案（紐約聯儲）。若網址變更，只需修改此處。
 ACM_URL = (
@@ -158,7 +166,8 @@ def build_dataset(raw: dict[str, pd.Series], strict_end: bool) -> tuple[pd.DataF
     firsts = {k: v.first_valid_index() for k, v in raw.items()}
     lasts = {k: v.last_valid_index() for k, v in raw.items()}
 
-    start = max(firsts.values())
+    # 共同起點只看核心序列；補充序列（LATE_START_SERIES）在各自起點之前留白
+    start = max(v for k, v in firsts.items() if k not in LATE_START_SERIES)
     end = min(lasts.values()) if strict_end else max(lasts.values())
 
     idx = pd.bdate_range(start, end)
@@ -174,12 +183,14 @@ def build_meta(raw: dict[str, pd.Series], df: pd.DataFrame, start, end, strict_e
     for code, s in raw.items():
         desc, unit = {**FRED_SERIES, **ACM_SERIES}[code]
         source = "FRED" if code in FRED_SERIES else "NY Fed ACM"
-        gap_range, gap_len = longest_gap(df[code])
+        # 斷層只從該序列自己的起始日開始算，補充序列起點前的空白不算斷層
+        gap_range, gap_len = longest_gap(df[code].loc[s.first_valid_index():])
         rows.append({
             "代碼": code,
             "說明": desc,
             "單位": unit,
             "來源": source,
+            "決定共同起點": "否（補充序列）" if code in LATE_START_SERIES else "是",
             "原始起始日": s.first_valid_index().date(),
             "原始最新日": s.last_valid_index().date(),
             "期間內有效筆數": int(df[code].notna().sum()),
@@ -190,11 +201,12 @@ def build_meta(raw: dict[str, pd.Series], df: pd.DataFrame, start, end, strict_e
 
     run_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     notes = pd.DataFrame({
-        "項目": ["更新時間", "共同期間", "結束日規則", "缺值說明"],
+        "項目": ["更新時間", "共同期間", "結束日規則", "補充序列", "缺值說明"],
         "內容": [
             run_time,
             f"{start.date()} ~ {end.date()}",
             "所有序列共同的最後一天" if strict_end else "任一序列的最新資料日（較晚更新的序列在近期會顯示空白）",
+            f"{', '.join(sorted(LATE_START_SERIES))} 起始較晚，不決定共同起點，起點前為空白；僅用於 2003 年後的 breakeven 拆解。",
             "空白代表該日無資料（假日或序列停編），未做任何插補；請於分析階段自行處理。",
         ],
     })
@@ -236,7 +248,7 @@ def write_excel(df: pd.DataFrame, meta: pd.DataFrame, notes: pd.DataFrame, path:
         notes.to_excel(writer, sheet_name="notes", index=False)
 
         style_sheet(writer.sheets["data"], number_format="0.00", date_cols=(1,))
-        style_sheet(writer.sheets["series_info"], date_cols=(5, 6))
+        style_sheet(writer.sheets["series_info"], date_cols=(6, 7))
         style_sheet(writer.sheets["notes"])
     tmp.replace(path)
 

@@ -7,6 +7,7 @@ Tier 1 迴歸分析（研究大綱第四部分與 5.1）。
     3. 歸因：超額敏感度來自政策預期還是期限溢價
     4. 各期間 beta（描述性）
     5. 滾動 beta（252 日視窗）
+    6. 穩健性：控制 2022 年後的通膨環境
 
 標準誤：Newey-West（Bartlett kernel，10 期落後，含 n/(n-k) 小樣本修正）。
 OLS 以 numpy 實作，避免額外套件依賴；結果與 statsmodels 的
@@ -158,6 +159,41 @@ def attribution(table: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+POST_STARTS = ["2022-03-17", "2023-01-01"]   # 零利率結束隔天；滾動 beta 明顯上升的時點
+
+
+def post2022_robustness(df: pd.DataFrame, starts: list[str] = POST_STARTS) -> pd.DataFrame:
+    """
+    穩健性：加入「2022 年後」虛擬變數與其油價交乘項，讓近期平常時期有自己的敏感度。
+    2026 的比較基準改為同一通膨環境下的平常水準。
+    """
+    specs = [("dDGS2", "Dhist_short"), ("dDGS10", "Dhist"), ("dACMRNY10", "Dhist"), ("dACMTP10", "Dhist")]
+    quantities = {
+        "pre-2022 normal": {"oil_a": 1, "oil_b": 1},
+        "post-2022 normal": {"oil_a": 1, "oil_b": 1, "oil_a_xpost": 1, "oil_b_xpost": 1},
+        "2026": {"oil_a": 1, "oil_b": 1, "oil_a_xpost": 1, "oil_b_xpost": 1,
+                 "oil_a_x2026": 1, "oil_b_x2026": 1},
+        "2026 vs post-2022 normal": {"oil_a_x2026": 1, "oil_b_x2026": 1},
+    }
+    rows = []
+    for start in starts:
+        post = (df.index >= start).astype(int)
+        for y, hist in specs:
+            X = design(df, hist)
+            X["DPOST"] = post
+            for tag, col in [("a", "dOil"), ("b", "dOil_lead")]:
+                X[f"oil_{tag}_xpost"] = df[col] * post
+            res = ols_hac(df[y], X)
+            for label, w in quantities.items():
+                est, se = res.lincom(w)
+                rows.append({"post start": start, "dependent": y, "quantity": label,
+                             "bp/10%": est * SCALE, "SE": se * SCALE,
+                             "95% CI low": (est - 1.96 * se) * SCALE,
+                             "95% CI high": (est + 1.96 * se) * SCALE,
+                             "p one-sided (>0)": 1 - stats.norm.cdf(est / se)})
+    return pd.DataFrame(rows)
+
+
 def episode_betas(df: pd.DataFrame) -> pd.DataFrame:
     """每段期間內單獨估計（描述性，不做正式比較）。"""
     ep_cols = [c for c in df.columns if c.startswith("E_")] + ["D2026"]
@@ -220,12 +256,14 @@ def main() -> None:
     eps = episode_betas(df)
     roll = rolling_betas(df)
     band = rolling_band(roll)
+    post = post2022_robustness(df)
 
     table.to_csv(RESULTS / "main_regressions.csv")
     attr.to_csv(RESULTS / "acm_attribution.csv")
     eps.to_csv(RESULTS / "episode_betas.csv")
     roll.to_csv(RESULTS / "rolling_betas.csv")
     band.to_csv(RESULTS / "rolling_band.csv")
+    post.to_csv(RESULTS / "robust_post2022.csv", index=False)
 
     pd.set_option("display.width", 200)
     cols = ["Normal (bp/10%)", "Historical shocks (bp/10%)", "2026 (bp/10%)",
@@ -239,6 +277,9 @@ def main() -> None:
     print(eps.round(2).to_string())
     print("\n== 滾動 beta 歷史區間（排除零利率與 2026）==")
     print(band.round(2).to_string())
+    print("\n== 穩健性：控制 2022 年後的通膨環境（2026 vs 2022 年後平常時期）==")
+    key = post[post.quantity == "2026 vs post-2022 normal"]
+    print(key.drop(columns="quantity").round(2).to_string(index=False))
 
 
 if __name__ == "__main__":

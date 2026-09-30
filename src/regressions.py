@@ -7,7 +7,7 @@ Tier 1 迴歸分析（研究大綱第四部分與 5.1）。
     3. 歸因：超額敏感度來自政策預期還是期限溢價
     4. 各期間 beta（描述性）
     5. 滾動 beta（252 日視窗）
-    6. 穩健性：控制 2022 年後的通膨環境
+    6. 結構性斷點檢定（sup-Wald），並以斷點後的平常時期作為 2026 的比較基準
 
 標準誤：Newey-West（Bartlett kernel，10 期落後，含 n/(n-k) 小樣本修正）。
 OLS 以 numpy 實作，避免額外套件依賴；結果與 statsmodels 的
@@ -159,38 +159,107 @@ def attribution(table: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-POST_STARTS = ["2022-03-17", "2023-01-01"]   # 零利率結束隔天；滾動 beta 明顯上升的時點
+# ----------------------------------------------------------------------------
+# 結構性斷點檢定（sup-Wald，Andrews 1993）與斷點後的比較
+# ----------------------------------------------------------------------------
+BREAK_SAMPLE = ("2016-01-01", "2026-02-27")   # 第一段零利率結束後至開戰前最後一個交易日
+BREAK_TRIM = 0.15                             # 頭尾各排除 15%
+BREAK_REF = ("dDGS2", "Dhist_short")          # 以 2 年期找出的斷點作為比較基準
 
 
-def post2022_robustness(df: pd.DataFrame, starts: list[str] = POST_STARTS) -> pd.DataFrame:
+def _break_design(d: pd.DataFrame, hist: str) -> pd.DataFrame:
+    X = pd.DataFrame(index=d.index)
+    X["const"] = 1.0
+    X["Dhist"], X["DZLB"] = d[hist], d["DZLB"]
+    for tag, col in [("a", "dOil"), ("b", "dOil_lead")]:
+        X[f"oil_{tag}"] = d[col]
+        X[f"oil_{tag}_xhist"] = d[col] * d[hist]
+        X[f"oil_{tag}_xzlb"] = d[col] * d["DZLB"]
+    X["dEq"] = d["dEq"]
+    return X
+
+
+def supwald_critical_values(p: int = 2, trim: float = BREAK_TRIM, reps: int = 20000,
+                            grid: int = 1000, seed: int = 1) -> dict[float, float]:
+    """以模擬 Brownian bridge 取得 sup-Wald 的臨界值（p 個受檢定參數）。"""
+    rng = np.random.default_rng(seed)
+    t = np.arange(1, grid + 1) / grid
+    lo, hi = int(grid * trim), int(grid * (1 - trim))
+    sups = []
+    for _ in range(reps // 1000):
+        W = (rng.standard_normal((1000, grid, p)) / np.sqrt(grid)).cumsum(axis=1)
+        B = W - t[None, :, None] * W[:, -1:, :]
+        stat = (B[:, lo:hi] ** 2).sum(axis=2) / (t[lo:hi] * (1 - t[lo:hi]))[None, :]
+        sups.append(stat.max(axis=1))
+    sups = np.concatenate(sups)
+    return {"cv10": np.quantile(sups, 0.90), "cv5": np.quantile(sups, 0.95),
+            "cv1": np.quantile(sups, 0.99), "draws": sups}
+
+
+def break_test(df: pd.DataFrame, y: str, hist: str, sample: tuple[str, str] = BREAK_SAMPLE,
+               trim: float = BREAK_TRIM) -> pd.DataFrame:
     """
-    穩健性：加入「2022 年後」虛擬變數與其油價交乘項，讓近期平常時期有自己的敏感度。
-    2026 的比較基準改為同一通膨環境下的平常水準。
+    逐日嘗試切點 τ，檢定油價敏感度（當天 + 隔天兩個交乘項）在 τ 前後是否不同。
+    回傳每個切點的 Wald 統計量與斷點後的敏感度變化（bp/10%）。
+    """
+    d = df.loc[sample[0]:sample[1]].dropna(subset=[y, "dOil", "dOil_lead", "dEq"])
+    n = len(d)
+    X0 = _break_design(d, hist)
+    keys = ["oil_a_xpost", "oil_b_xpost"]
+    rows = []
+    for k in range(int(n * trim), int(n * (1 - trim))):
+        tau = d.index[k]
+        post = (d.index >= tau).astype(float)
+        X = X0.copy()
+        X["DPOST"] = post
+        X["oil_a_xpost"], X["oil_b_xpost"] = d["dOil"] * post, d["dOil_lead"] * post
+        res = ols_hac(d[y], X)
+        b = res.params[keys].to_numpy()
+        V = res.cov.loc[keys, keys].to_numpy()
+        rows.append({"date": tau, "wald": float(b @ np.linalg.solve(V, b)), "shift (bp/10%)": b.sum() * SCALE})
+    return pd.DataFrame(rows).set_index("date")
+
+
+def break_summary(paths: dict[str, pd.DataFrame], cv: dict) -> pd.DataFrame:
+    rows = []
+    for y, path in paths.items():
+        top = path["wald"].idxmax()
+        sup = path.loc[top, "wald"]
+        rows.append({"dependent": y, "sup-Wald": sup, "p-value": (cv["draws"] >= sup).mean(),
+                     "break date": top.date(), "shift (bp/10%)": path.loc[top, "shift (bp/10%)"],
+                     "cv 10%": cv["cv10"], "cv 5%": cv["cv5"], "cv 1%": cv["cv1"],
+                     "search from": path.index[0].date(), "search to": path.index[-1].date()})
+    return pd.DataFrame(rows).set_index("dependent")
+
+
+def regime_robustness(df: pd.DataFrame, start: str) -> pd.DataFrame:
+    """
+    以斷點日期為界，讓斷點後的平常時期有自己的敏感度；
+    2026 的比較基準改為同一環境下（斷點後、開戰前）的平常水準。
     """
     specs = [("dDGS2", "Dhist_short"), ("dDGS10", "Dhist"), ("dACMRNY10", "Dhist"), ("dACMTP10", "Dhist")]
     quantities = {
-        "pre-2022 normal": {"oil_a": 1, "oil_b": 1},
-        "post-2022 normal": {"oil_a": 1, "oil_b": 1, "oil_a_xpost": 1, "oil_b_xpost": 1},
+        "pre-break normal": {"oil_a": 1, "oil_b": 1},
+        "post-break normal": {"oil_a": 1, "oil_b": 1, "oil_a_xpost": 1, "oil_b_xpost": 1},
         "2026": {"oil_a": 1, "oil_b": 1, "oil_a_xpost": 1, "oil_b_xpost": 1,
                  "oil_a_x2026": 1, "oil_b_x2026": 1},
-        "2026 vs post-2022 normal": {"oil_a_x2026": 1, "oil_b_x2026": 1},
+        "2026 vs post-break normal": {"oil_a_x2026": 1, "oil_b_x2026": 1},
     }
+    post = (df.index >= start).astype(int)
     rows = []
-    for start in starts:
-        post = (df.index >= start).astype(int)
-        for y, hist in specs:
-            X = design(df, hist)
-            X["DPOST"] = post
-            for tag, col in [("a", "dOil"), ("b", "dOil_lead")]:
-                X[f"oil_{tag}_xpost"] = df[col] * post
-            res = ols_hac(df[y], X)
-            for label, w in quantities.items():
-                est, se = res.lincom(w)
-                rows.append({"post start": start, "dependent": y, "quantity": label,
-                             "bp/10%": est * SCALE, "SE": se * SCALE,
-                             "95% CI low": (est - 1.96 * se) * SCALE,
-                             "95% CI high": (est + 1.96 * se) * SCALE,
-                             "p one-sided (>0)": 1 - stats.norm.cdf(est / se)})
+    for y, hist in specs:
+        X = design(df, hist)
+        X["DPOST"] = post
+        for tag, col in [("a", "dOil"), ("b", "dOil_lead")]:
+            X[f"oil_{tag}_xpost"] = df[col] * post
+        res = ols_hac(df[y], X)
+        for label, w in quantities.items():
+            est, se = res.lincom(w)
+            rows.append({"break date": start, "dependent": y, "quantity": label,
+                         "bp/10%": est * SCALE, "SE": se * SCALE,
+                         "95% CI low": (est - 1.96 * se) * SCALE,
+                         "95% CI high": (est + 1.96 * se) * SCALE,
+                         "p one-sided (>0)": 1 - stats.norm.cdf(est / se)})
     return pd.DataFrame(rows)
 
 
@@ -256,14 +325,19 @@ def main() -> None:
     eps = episode_betas(df)
     roll = rolling_betas(df)
     band = rolling_band(roll)
-    post = post2022_robustness(df)
+    cv = supwald_critical_values()
+    paths = {y: break_test(df, y, h) for y, h in [BREAK_REF, ("dDGS10", "Dhist")]}
+    brk = break_summary(paths, cv)
+    regime = regime_robustness(df, str(brk.loc[BREAK_REF[0], "break date"]))
 
     table.to_csv(RESULTS / "main_regressions.csv")
     attr.to_csv(RESULTS / "acm_attribution.csv")
     eps.to_csv(RESULTS / "episode_betas.csv")
     roll.to_csv(RESULTS / "rolling_betas.csv")
     band.to_csv(RESULTS / "rolling_band.csv")
-    post.to_csv(RESULTS / "robust_post2022.csv", index=False)
+    brk.to_csv(RESULTS / "break_test.csv")
+    pd.concat({y: p["wald"] for y, p in paths.items()}, axis=1).to_csv(RESULTS / "break_wald_path.csv")
+    regime.to_csv(RESULTS / "robust_regime.csv", index=False)
 
     pd.set_option("display.width", 200)
     cols = ["Normal (bp/10%)", "Historical shocks (bp/10%)", "2026 (bp/10%)",
@@ -277,9 +351,10 @@ def main() -> None:
     print(eps.round(2).to_string())
     print("\n== 滾動 beta 歷史區間（排除零利率與 2026）==")
     print(band.round(2).to_string())
-    print("\n== 穩健性：控制 2022 年後的通膨環境（2026 vs 2022 年後平常時期）==")
-    key = post[post.quantity == "2026 vs post-2022 normal"]
-    print(key.drop(columns="quantity").round(2).to_string(index=False))
+    print("\n== 結構性斷點檢定（sup-Wald，開戰前樣本）==")
+    print(brk.round(3).to_string())
+    print(f"\n== 穩健性：以斷點 {brk.loc[BREAK_REF[0], 'break date']} 為界，2026 vs 斷點後平常時期 ==")
+    print(regime.round(2).to_string(index=False))
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ jobs:
           python src/prepare.py
           python src/regressions.py
           python src/figures.py
+          python src/descriptive.py
 
       - name: Commit if changed
         run: |

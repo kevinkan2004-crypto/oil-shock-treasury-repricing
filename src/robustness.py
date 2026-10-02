@@ -9,6 +9,8 @@ robustness.py
        c. 以斷點後、開戰前的平常時期作為 2026 的比較基準
     2. 排除 FOMC 聲明日與 CPI 公布日（日資料）：
        同樣的 a、b、c，看總經消息日是否灌高了近期的油價敏感度
+    3. 2026 年拆成兩個階段（日資料與週資料）：
+       第一階段：開戰至 6 月停火後油價回到戰前水準；第二階段：7 月 8 日戰事再起至今
 
 週資料讓 Brent（倫敦時段）與美債（紐約收盤）的收盤時間差只影響一週的頭尾，
 因此不再加入隔週油價（Dimson）項。
@@ -36,6 +38,11 @@ WEEKLY_HAC_LAGS = 8
 FOMC_PATH = ROOT / "data" / "fomc_dates.csv"
 CPI_PATH = ROOT / "data" / "cpi_release_dates.csv"
 REGIME_START = "2022-03-17"     # 經濟理由：聯準會首次升息隔天、零利率結束
+
+# 2026 年兩個階段。第一階段結束日依價格回歸法（Brent 5 日均價回到開戰前水準）；
+# 第二階段起點為停火破裂、戰事再起之日（https://en.wikipedia.org/wiki/Timeline_of_the_2026_Iran_war）。
+# 兩階段之間的幾天不屬於任何一段，從樣本中排除，避免被算進平常時期。
+PHASES = {"Phase 1": ("2026-03-02", "2026-07-01"), "Phase 2": ("2026-07-08", None)}
 SERIES = ["DGS2", "DGS10", "DCOILBRENTEU", "NASDAQCOM", "ACMRNY10", "ACMTP10", "ACMY10"]
 
 
@@ -272,10 +279,95 @@ def run_event_exclusion() -> None:
     print(brk.round(3).to_string(index=False))
 
 
+# ----------------------------------------------------------------------------
+# 3. 2026 年拆成兩個階段
+# ----------------------------------------------------------------------------
+def _phase_dummies(index: pd.DatetimeIndex, week_start: pd.DatetimeIndex | None = None) -> pd.DataFrame:
+    """日資料：日期落在階段內；週資料：該週與階段重疊。"""
+    lo = index if week_start is None else week_start
+    out = pd.DataFrame(index=index)
+    for name, (a, b) in PHASES.items():
+        end = pd.Timestamp(b) if b else index.max()
+        out[name] = ((index >= pd.Timestamp(a)) & (lo <= end)).astype(int)
+    return out
+
+
+def _phase_design(d: pd.DataFrame, ph: pd.DataFrame, hist: str, oil_cols: list[str],
+                  regime: bool) -> pd.DataFrame:
+    X = pd.DataFrame(index=d.index)
+    X["const"] = 1.0
+    X["P1"], X["P2"], X["Dhist"], X["DZLB"] = ph["Phase 1"], ph["Phase 2"], d[hist], d["DZLB"]
+    post = (d.index >= REGIME_START).astype(int)
+    if regime:
+        X["DPOST"] = post
+    for tag, col in zip("ab", oil_cols):
+        X[f"oil_{tag}"] = d[col]
+        X[f"oil_{tag}_xP1"] = d[col] * ph["Phase 1"]
+        X[f"oil_{tag}_xP2"] = d[col] * ph["Phase 2"]
+        X[f"oil_{tag}_xhist"] = d[col] * d[hist]
+        X[f"oil_{tag}_xzlb"] = d[col] * d["DZLB"]
+        if regime:
+            X[f"oil_{tag}_xpost"] = d[col] * post
+    X["dEq"] = d["dEq"]
+    return X
+
+
+def _phase_rows(d: pd.DataFrame, ph: pd.DataFrame, oil_cols: list[str], lags: int, freq: str) -> list[dict]:
+    tags = list("ab")[:len(oil_cols)]
+    sm = lambda suffix, sign=1: {f"oil_{t}{suffix}": sign for t in tags}   # noqa: E731
+    rows = []
+    for y, hist in SPECS:
+        # (1) 相對歷史衝擊
+        res = ols_hac(d[y], _phase_design(d, ph, hist, oil_cols, regime=False), lags=lags)
+        n1, n2 = int(ph.loc[d[y].notna(), "Phase 1"].sum()), int(ph.loc[d[y].notna(), "Phase 2"].sum())
+        for label, w in {
+            "Phase 1 sensitivity": {**sm(""), **sm("_xP1")},
+            "Phase 2 sensitivity": {**sm(""), **sm("_xP2")},
+            "Phase 1 vs past shocks": {**sm("_xP1"), **sm("_xhist", -1)},
+            "Phase 2 vs past shocks": {**sm("_xP2"), **sm("_xhist", -1)},
+            "Phase 2 minus Phase 1": {**sm("_xP2"), **sm("_xP1", -1)},
+        }.items():
+            rows.append(_row(res, label, w, freq=freq, dependent=y, comparison="vs past shocks",
+                             **{"phase 1 obs": n1, "phase 2 obs": n2}))
+        # (2) 相對 2022 年後平常時期
+        res = ols_hac(d[y], _phase_design(d, ph, hist, oil_cols, regime=True), lags=lags)
+        for label, w in {
+            "Phase 1 vs post-2022 normal": sm("_xP1"),
+            "Phase 2 vs post-2022 normal": sm("_xP2"),
+        }.items():
+            rows.append(_row(res, label, w, freq=freq, dependent=y, comparison=f"regime from {REGIME_START}",
+                             **{"phase 1 obs": n1, "phase 2 obs": n2}))
+    return rows
+
+
+def run_phase_split() -> pd.DataFrame:
+    gap = lambda idx: (idx > pd.Timestamp(PHASES["Phase 1"][1])) & (idx < pd.Timestamp(PHASES["Phase 2"][0]))  # noqa: E731
+    # 日資料
+    df = pd.read_csv(ROOT / "data" / "prepared.csv", index_col=0, parse_dates=True)
+    df = df[~gap(df.index)]
+    rows = _phase_rows(df, _phase_dummies(df.index), ["dOil", "dOil_lead"], 10, "daily")
+    # 週資料
+    raw = load_raw()
+    w = weekly_panel(raw, build_episodes(raw["DCOILBRENTEU"]))
+    ws = w.index - pd.Timedelta(days=6)
+    ph_w = _phase_dummies(w.index, ws)
+    rows += _phase_rows(w, ph_w, ["dOil"], WEEKLY_HAC_LAGS, "weekly")
+
+    out = pd.DataFrame(rows)
+    out.to_csv(RESULTS / "robust_phases.csv", index=False)
+    pd.set_option("display.width", 220)
+    print("\n== 2026 年兩階段（bp/10%）==")
+    cols = ["freq", "dependent", "quantity", "bp/10%", "95% CI low", "95% CI high", "p one-sided (>0)",
+            "phase 1 obs", "phase 2 obs"]
+    print(out[cols].round(2).to_string(index=False))
+    return out
+
+
 def main() -> None:
     RESULTS.mkdir(exist_ok=True)
     run_weekly()
     run_event_exclusion()
+    run_phase_split()
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ jobs:
           python src/regressions.py
           python src/figures.py
           python src/descriptive.py
+          python src/robustness.py
 
       - name: Commit if changed
         run: |

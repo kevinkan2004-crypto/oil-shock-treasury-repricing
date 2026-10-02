@@ -36,6 +36,12 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_PATH = ROOT / "data" / "oil_bond_data.xlsx"
 
 FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
+FRED_VINTAGE_URL = "https://api.stlouisfed.org/fred/series/vintagedates"
+
+# CPI 公布日：取自 ALFRED 的歷史版本日期。用未季調 CPI（CPIAUCNS），
+# 因為它只在每月公布時更新，不會因季節因子修正而多出非公布日的版本。
+CPI_VINTAGE_SERIES = "CPIAUCNS"
+CPI_DATES_PATH = ROOT / "data" / "cpi_release_dates.csv"
 
 # FRED 序列：代碼 -> (欄位說明, 單位)
 FRED_SERIES = {
@@ -126,6 +132,35 @@ def fetch_fred_series(series_id: str, api_key: str) -> pd.Series:
     values = pd.to_numeric(obs["value"].replace(".", pd.NA), errors="coerce")
     s = pd.Series(values.values, index=pd.to_datetime(obs["date"]), name=series_id)
     return s.dropna()
+
+
+def fetch_cpi_release_dates(api_key: str) -> pd.DataFrame:
+    """
+    回傳 CPI 每次公布的日期。每個公布日對應一個 ALFRED 版本日期；
+    同一個月若出現多個版本（更正或特殊修訂），全部保留並標記，供人工檢查。
+    """
+    params = {"series_id": CPI_VINTAGE_SERIES, "api_key": api_key, "file_type": "json",
+              "realtime_start": "1776-07-04", "realtime_end": "9999-12-31", "limit": 10000}
+    data = get_with_retry(FRED_VINTAGE_URL, params=params).json()
+    dates = pd.to_datetime(pd.Series(data["vintage_dates"], name="date")).sort_values()
+    out = pd.DataFrame({"date": dates.dt.date})
+    month = dates.dt.to_period("M")
+    out["extra_in_month"] = month.duplicated(keep="first").to_numpy()
+    out["weekday"] = dates.dt.day_name().to_numpy()
+    return out.reset_index(drop=True)
+
+
+def check_cpi_dates(cpi: pd.DataFrame) -> None:
+    """列出覆蓋起點、每年筆數不是 12 的年份、以及同月多筆的日期。"""
+    d = pd.to_datetime(cpi["date"])
+    print(f"  CPI 公布日 {len(cpi)} 筆：{d.min().date()} ~ {d.max().date()}")
+    per_year = d.dt.year.value_counts().sort_index()
+    odd = per_year[(per_year != 12) & (per_year.index > d.dt.year.min()) & (per_year.index < d.dt.year.max())]
+    if not odd.empty:
+        print("  注意：以下年份的筆數不是 12，請檢查：", odd.to_dict())
+    extra = cpi[cpi.extra_in_month]
+    if not extra.empty:
+        print("  注意：以下日期與同月另一筆重複（可能是更正版本）：", [str(x) for x in extra.date])
 
 
 def fetch_acm() -> pd.DataFrame:
@@ -278,6 +313,11 @@ def main() -> None:
     df, start, end = build_dataset(raw, args.strict_end)
     meta, notes = build_meta(raw, df, start, end, args.strict_end)
     write_excel(df, meta, notes, args.output)
+
+    print("下載 CPI 公布日（ALFRED 版本日期）...")
+    cpi = fetch_cpi_release_dates(api_key)
+    cpi.to_csv(CPI_DATES_PATH, index=False)
+    check_cpi_dates(cpi)
 
     print(f"\n完成：{args.output}")
     print(f"共同期間 {start.date()} ~ {end.date()}，共 {len(df):,} 筆")

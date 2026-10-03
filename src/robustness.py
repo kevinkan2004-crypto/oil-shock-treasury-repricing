@@ -11,12 +11,14 @@ robustness.py
        同樣的 a、b、c，看總經消息日是否灌高了近期的油價敏感度
     3. 2026 年拆成兩個階段（日資料與週資料）：
        第一階段：開戰至 6 月停火後油價回到戰前水準；第二階段：7 月 8 日戰事再起至今
+    4. 新常態起點的替代日期（日資料與週資料）：
+       檢驗「2026 vs 新常態」的結論是否取決於起點的選擇
 
 週資料讓 Brent（倫敦時段）與美債（紐約收盤）的收盤時間差只影響一週的頭尾，
 因此不再加入隔週油價（Dimson）項。
 
 輸入：data/oil_bond_data.xlsx、data/prepared.csv、data/fomc_dates.csv、data/cpi_release_dates.csv
-輸出：results/robustness/（robust_weekly_*、robust_events_*、robust_phases）
+輸出：results/robustness/（robust_weekly_*、robust_events_*、robust_phases、robust_alt_regimes）
 """
 
 from __future__ import annotations
@@ -41,6 +43,13 @@ CPI_PATH = ROOT / "data" / "cpi_release_dates.csv"
 # 2026 年兩個階段。第一階段結束日依價格回歸法（Brent 5 日均價回到開戰前水準）；
 # 第二階段起點為停火破裂、戰事再起之日（https://en.wikipedia.org/wiki/Timeline_of_the_2026_Iran_war）。
 # 兩階段之間的幾天不屬於任何一段，從樣本中排除，避免被算進平常時期。
+# 新常態起點：主要設定（REGIME_START，來自 regressions.py）與兩個有經濟依據的替代日期。
+# 每個數值都是「2026 年敏感度 − 該起點之後、開戰前平常時期的敏感度」。
+ALT_REGIME_STARTS = {
+    "2021-07-01": "inflation clearly above target",
+    "2023-07-27": "after the last hike of the cycle",
+}
+
 PHASES = {"Phase 1": ("2026-03-02", "2026-07-01"), "Phase 2": ("2026-07-08", None)}
 SERIES = ["DGS2", "DGS10", "DCOILBRENTEU", "NASDAQCOM", "ACMRNY10", "ACMTP10", "ACMY10"]
 
@@ -361,11 +370,41 @@ def run_phase_split() -> pd.DataFrame:
     return out
 
 
+# ----------------------------------------------------------------------------
+# 4. 新常態起點的替代日期
+# ----------------------------------------------------------------------------
+def run_alt_regimes() -> pd.DataFrame:
+    starts = {REGIME_START: "main: day after the first hike (end of ZLB)", **ALT_REGIME_STARTS}
+    df = pd.read_csv(ROOT / "data" / "prepared.csv", index_col=0, parse_dates=True)
+    raw = load_raw()
+    w = weekly_panel(raw, build_episodes(raw["DCOILBRENTEU"]))
+
+    parts = []
+    for start, why in starts.items():
+        d = regime_robustness(df, start)
+        d.insert(0, "freq", "daily")
+        k = weekly_regime(w, start, why).drop(columns="regime source")
+        k.insert(0, "freq", "weekly")
+        for t in (d, k):
+            t.insert(2, "rationale", why)
+        parts += [d, k]
+    out = pd.concat(parts, ignore_index=True)
+    out.to_csv(RESULTS / "robust_alt_regimes.csv", index=False)
+
+    pd.set_option("display.width", 220)
+    print("\n== 新常態起點的替代日期：2026 vs 起點後平常時期（bp/10%）==")
+    show = out[out.quantity == "2026 vs post-regime normal"]
+    print(show[["freq", "regime start", "dependent", "bp/10%", "95% CI low", "95% CI high",
+                "p one-sided (>0)"]].round(2).to_string(index=False))
+    return out
+
+
 def main() -> None:
     RESULTS.mkdir(parents=True, exist_ok=True)
     run_weekly()
     run_event_exclusion()
     run_phase_split()
+    run_alt_regimes()
 
 
 if __name__ == "__main__":

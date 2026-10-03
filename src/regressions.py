@@ -7,7 +7,7 @@ Tier 1 迴歸分析（研究大綱第四部分與 5.1）。
     3. 歸因：超額敏感度來自政策預期還是期限溢價
     4. 各期間 beta（描述性）
     5. 滾動 beta（252 日視窗）
-    6. 結構性斷點檢定（sup-Wald），並以斷點後的平常時期作為 2026 的比較基準
+    6. 新常態比較：以 2022-03-17 為主要起點；結構性斷點檢定（sup-Wald）與斷點日期版本作為輔助證據
 
 標準誤：Newey-West（Bartlett kernel，10 期落後，含 n/(n-k) 小樣本修正）。
 OLS 以 numpy 實作，避免額外套件依賴；結果與 statsmodels 的
@@ -164,7 +164,12 @@ def attribution(table: pd.DataFrame) -> pd.DataFrame:
 # ----------------------------------------------------------------------------
 BREAK_SAMPLE = ("2016-01-01", "2026-02-27")   # 第一段零利率結束後至開戰前最後一個交易日
 BREAK_TRIM = 0.15                             # 頭尾各排除 15%
-BREAK_REF = ("dDGS2", "Dhist_short")          # 以 2 年期找出的斷點作為比較基準
+BREAK_REF = ("dDGS2", "Dhist_short")          # 以 2 年期找出的斷點作為輔助比較基準
+
+# 新常態的主要起點：依經濟理由定義（聯準會首次升息隔天、零利率結束），不由資料估計。
+# 斷點檢定挑的是讓前後差異最大的日期，用它當基準會高估斷點後的敏感度，
+# 使比較偏向「沒有過度反應」，因此斷點日期只作為輔助證據。
+REGIME_START = "2022-03-17"
 
 
 def _break_design(d: pd.DataFrame, hist: str) -> pd.DataFrame:
@@ -232,18 +237,18 @@ def break_summary(paths: dict[str, pd.DataFrame], cv: dict) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("dependent")
 
 
-def regime_robustness(df: pd.DataFrame, start: str) -> pd.DataFrame:
+def regime_robustness(df: pd.DataFrame, start: str = REGIME_START) -> pd.DataFrame:
     """
-    以斷點日期為界，讓斷點後的平常時期有自己的敏感度；
-    2026 的比較基準改為同一環境下（斷點後、開戰前）的平常水準。
+    以 start 為新常態起點，讓之後的平常時期有自己的敏感度；
+    2026 的比較基準改為同一環境下（起點之後、開戰前）的平常水準。
     """
     specs = [("dDGS2", "Dhist_short"), ("dDGS10", "Dhist"), ("dACMRNY10", "Dhist"), ("dACMTP10", "Dhist")]
     quantities = {
-        "pre-break normal": {"oil_a": 1, "oil_b": 1},
-        "post-break normal": {"oil_a": 1, "oil_b": 1, "oil_a_xpost": 1, "oil_b_xpost": 1},
+        "pre-regime normal": {"oil_a": 1, "oil_b": 1},
+        "post-regime normal": {"oil_a": 1, "oil_b": 1, "oil_a_xpost": 1, "oil_b_xpost": 1},
         "2026": {"oil_a": 1, "oil_b": 1, "oil_a_xpost": 1, "oil_b_xpost": 1,
                  "oil_a_x2026": 1, "oil_b_x2026": 1},
-        "2026 vs post-break normal": {"oil_a_x2026": 1, "oil_b_x2026": 1},
+        "2026 vs post-regime normal": {"oil_a_x2026": 1, "oil_b_x2026": 1},
     }
     post = (df.index >= start).astype(int)
     rows = []
@@ -255,7 +260,7 @@ def regime_robustness(df: pd.DataFrame, start: str) -> pd.DataFrame:
         res = ols_hac(df[y], X)
         for label, w in quantities.items():
             est, se = res.lincom(w)
-            rows.append({"break date": start, "dependent": y, "quantity": label,
+            rows.append({"regime start": start, "dependent": y, "quantity": label,
                          "bp/10%": est * SCALE, "SE": se * SCALE,
                          "95% CI low": (est - 1.96 * se) * SCALE,
                          "95% CI high": (est + 1.96 * se) * SCALE,
@@ -280,11 +285,14 @@ def episode_betas(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("episode")
 
 
+ROLL_SERIES = ["dDGS2", "dDGS10", "dDGS30", "dACMRNY10"]   # ACMRNY10 = 10 年期政策預期
+
+
 def rolling_betas(df: pd.DataFrame, window: int = ROLL_WINDOW) -> pd.DataFrame:
     """簡化式滾動 beta（不含虛擬變數），總 beta = 當天 + 隔天。"""
     out = {}
     base = df[["dOil", "dOil_lead", "dEq"]]
-    for y in ["dDGS2", "dDGS10", "dDGS30"]:
+    for y in ROLL_SERIES:
         data = pd.concat([df[y], base], axis=1).dropna()
         Y = data[y].to_numpy()
         X = np.column_stack([np.ones(len(data)), data[["dOil", "dOil_lead", "dEq"]].to_numpy()])
@@ -307,12 +315,12 @@ def rolling_betas(df: pd.DataFrame, window: int = ROLL_WINDOW) -> pd.DataFrame:
 def rolling_band(roll: pd.DataFrame) -> pd.DataFrame:
     """歷史 10%–90% 區間：排除零利率期間與 2026 年。"""
     hist = roll[(roll.DZLB == 0) & (roll.D2026 == 0)]
-    latest = roll.dropna(subset=["dDGS10"]).iloc[-1]
     rows = []
-    for y in ["dDGS2", "dDGS10", "dDGS30"]:
+    for y in ROLL_SERIES:
         s = hist[y].dropna()
+        latest = roll[y].dropna().iloc[-1]       # ACM 更新較慢，各序列取自己的最新值
         rows.append({"dependent": y, "p10": s.quantile(0.1), "p50": s.median(), "p90": s.quantile(0.9),
-                     "latest": latest[y], "latest percentile": (s < latest[y]).mean()})
+                     "latest": latest, "latest percentile": (s < latest).mean()})
     return pd.DataFrame(rows).set_index("dependent")
 
 
@@ -328,7 +336,9 @@ def main() -> None:
     cv = supwald_critical_values()
     paths = {y: break_test(df, y, h) for y, h in [BREAK_REF, ("dDGS10", "Dhist")]}
     brk = break_summary(paths, cv)
-    regime = regime_robustness(df, str(brk.loc[BREAK_REF[0], "break date"]))
+    break_date = str(brk.loc[BREAK_REF[0], "break date"])
+    regime = regime_robustness(df, REGIME_START)            # 主要設定
+    regime_break = regime_robustness(df, break_date)        # 輔助：斷點日期
 
     table.to_csv(RESULTS / "main_regressions.csv")
     attr.to_csv(RESULTS / "acm_attribution.csv")
@@ -338,6 +348,7 @@ def main() -> None:
     brk.to_csv(RESULTS / "break_test.csv")
     pd.concat({y: p["wald"] for y, p in paths.items()}, axis=1).to_csv(RESULTS / "break_wald_path.csv")
     regime.to_csv(RESULTS / "robust_regime.csv", index=False)
+    regime_break.to_csv(RESULTS / "robust_regime_breakdate.csv", index=False)
 
     pd.set_option("display.width", 200)
     cols = ["Normal (bp/10%)", "Historical shocks (bp/10%)", "2026 (bp/10%)",
@@ -353,8 +364,11 @@ def main() -> None:
     print(band.round(2).to_string())
     print("\n== 結構性斷點檢定（sup-Wald，開戰前樣本）==")
     print(brk.round(3).to_string())
-    print(f"\n== 穩健性：以斷點 {brk.loc[BREAK_REF[0], 'break date']} 為界，2026 vs 斷點後平常時期 ==")
+    print(f"\n== 新常態比較（主要設定）：以 {REGIME_START} 為起點，2026 vs 起點後平常時期 ==")
     print(regime.round(2).to_string(index=False))
+    print(f"\n== 新常態比較（輔助）：以斷點 {break_date} 為起點 ==")
+    key = regime_break[regime_break.quantity == "2026 vs post-regime normal"]
+    print(key.round(2).to_string(index=False))
 
 
 if __name__ == "__main__":

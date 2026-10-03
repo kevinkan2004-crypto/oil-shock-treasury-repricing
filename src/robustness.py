@@ -28,8 +28,8 @@ import pandas as pd
 from scipy import stats
 
 from prepare import ZLB_PERIODS, build_episodes, load_raw
-from regressions import (BREAK_SAMPLE, BREAK_TRIM, SCALE, break_test, main_regressions, ols_hac,
-                         regime_robustness, supwald_critical_values)
+from regressions import (BREAK_SAMPLE, BREAK_TRIM, REGIME_START, SCALE, break_test, main_regressions,
+                         ols_hac, regime_robustness, supwald_critical_values)
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS = ROOT / "results"
@@ -37,7 +37,6 @@ RESULTS = ROOT / "results"
 WEEKLY_HAC_LAGS = 8
 FOMC_PATH = ROOT / "data" / "fomc_dates.csv"
 CPI_PATH = ROOT / "data" / "cpi_release_dates.csv"
-REGIME_START = "2022-03-17"     # 經濟理由：聯準會首次升息隔天、零利率結束
 
 # 2026 年兩個階段。第一階段結束日依價格回歸法（Brent 5 日均價回到開戰前水準）；
 # 第二階段起點為停火破裂、戰事再起之日（https://en.wikipedia.org/wiki/Timeline_of_the_2026_Iran_war）。
@@ -150,12 +149,12 @@ def weekly_regime(w: pd.DataFrame, start: str, source: str) -> pd.DataFrame:
         X["DPOST"], X["oil_xpost"] = post, w["dOil"] * post
         res = ols_hac(w[y], X, lags=WEEKLY_HAC_LAGS)
         for label, wts in {
-            "pre-break normal": {"oil": 1},
-            "post-break normal": {"oil": 1, "oil_xpost": 1},
+            "pre-regime normal": {"oil": 1},
+            "post-regime normal": {"oil": 1, "oil_xpost": 1},
             "2026": {"oil": 1, "oil_xpost": 1, "oil_x2026": 1},
-            "2026 vs post-break normal": {"oil_x2026": 1},
+            "2026 vs post-regime normal": {"oil_x2026": 1},
         }.items():
-            rows.append(_row(res, label, wts, dependent=y, **{"break date": start, "break from": source}))
+            rows.append(_row(res, label, wts, dependent=y, **{"regime start": start, "regime source": source}))
     return pd.DataFrame(rows)
 
 
@@ -179,8 +178,9 @@ def run_weekly() -> None:
     brk = pd.DataFrame(brk_rows).set_index("dependent")
 
     weekly_date = str(brk.loc["dDGS2", "break date"])
-    regime = pd.concat([weekly_regime(w, weekly_date, "weekly test (2y)"),
-                        weekly_regime(w, "2024-05-01", "daily test (2y)")])
+    regime = pd.concat([weekly_regime(w, REGIME_START, "economic date (main)"),
+                        weekly_regime(w, weekly_date, "weekly break test (2y)"),
+                        weekly_regime(w, "2024-05-01", "daily break test (2y)")])
 
     main_tab.to_csv(RESULTS / "robust_weekly_main.csv", index=False)
     brk.to_csv(RESULTS / "robust_weekly_break.csv")
@@ -193,8 +193,8 @@ def run_weekly() -> None:
     print(main_tab.round(2).to_string(index=False))
     print("\n== 週資料 b. 斷點檢定 ==")
     print(brk.round(3).to_string())
-    print("\n== 週資料 c. 2026 vs 斷點後平常時期 ==")
-    print(regime[regime.quantity == "2026 vs post-break normal"].round(2).to_string(index=False))
+    print("\n== 週資料 c. 2026 vs 新常態平常時期（主要：經濟日期；輔助：斷點日期）==")
+    print(regime[regime.quantity == "2026 vs post-regime normal"].round(2).to_string(index=False))
 
 
 # ----------------------------------------------------------------------------
@@ -272,7 +272,7 @@ def run_event_exclusion() -> None:
     print("\n== 排除事件日 a. 2026 vs 歷史衝擊（bp/10%）==")
     print(main_tab.round(2).to_string(index=False))
     print(f"\n== 排除事件日 b. 以 {REGIME_START} 為新常態起點 ==")
-    show = regime[regime.quantity.isin(["pre-break normal", "post-break normal", "2026 vs post-break normal"])]
+    show = regime[regime.quantity.isin(["pre-regime normal", "post-regime normal", "2026 vs post-regime normal"])]
     print(show[["exclusion", "dependent", "quantity", "bp/10%", "95% CI low", "95% CI high",
                 "p one-sided (>0)"]].round(2).to_string(index=False))
     print("\n== 排除事件日 c. 斷點檢定（開戰前樣本）==")

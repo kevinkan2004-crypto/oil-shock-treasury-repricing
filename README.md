@@ -192,7 +192,7 @@ oil-shock-treasury-repricing/
 ## Reproduce
 
 ```bash
-git clone https://github.com/<your-username>/oil-shock-treasury-repricing.git
+git clone https://github.com/kevinkan2004/oil-shock-treasury-repricing.git
 cd oil-shock-treasury-repricing
 pip install -r requirements.txt
 
@@ -215,6 +215,6 @@ python src/figures.py
 ## Author
 
 **Kevin (You-Siang) Kan**, MS in Financial Economics, Columbia Business School
-[LinkedIn](https://www.linkedin.com/in/<your-profile>) · kevinkan2004@gmail.com
+[LinkedIn](https://www.linkedin.com/in/yousiang) · kevinkan2004@gmail.com
 
 *This project is for research and educational purposes only and is not investment advice.*

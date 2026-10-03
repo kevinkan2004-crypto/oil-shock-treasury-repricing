@@ -88,10 +88,15 @@ def table(header: list[str], rows: list[list[str]]) -> str:
 # ---------------------------------------------------------------- loading
 
 def read(name: str) -> pd.DataFrame:
-    path = RESULTS / name
-    if not path.exists():
-        sys.exit(f"update_readme: missing {path}")
-    return pd.read_csv(path)
+    """Find `name` anywhere under results/ (e.g. results/main/, results/robustness/)."""
+    matches = sorted(RESULTS.rglob(name))
+    if not matches:
+        sys.exit(f"update_readme: {name} not found anywhere under {RESULTS}")
+    if len(matches) > 1:
+        listed = ", ".join(str(m.relative_to(ROOT)) for m in matches)
+        sys.exit(f"update_readme: {name} found in more than one place ({listed}); "
+                 f"set the exact path in read()")
+    return pd.read_csv(matches[0])
 
 
 def regime_value(df: pd.DataFrame, dep: str, quantity: str) -> pd.Series:

@@ -16,7 +16,7 @@ robustness.py
 因此不再加入隔週油價（Dimson）項。
 
 輸入：data/oil_bond_data.xlsx、data/prepared.csv、data/fomc_dates.csv、data/cpi_release_dates.csv
-輸出：results/robust_weekly_*.csv、results/robust_events_*.csv
+輸出：results/robustness/（robust_weekly_*、robust_events_*、robust_phases）
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from regressions import (BREAK_SAMPLE, BREAK_TRIM, REGIME_START, SCALE, break_te
                          ols_hac, regime_robustness, supwald_critical_values)
 
 ROOT = Path(__file__).resolve().parents[1]
-RESULTS = ROOT / "results"
+RESULTS = ROOT / "results" / "robustness"
 
 WEEKLY_HAC_LAGS = 8
 FOMC_PATH = ROOT / "data" / "fomc_dates.csv"
@@ -166,10 +166,9 @@ def run_weekly() -> None:
     main_tab = weekly_main(w)
 
     cv = supwald_critical_values(p=1)
-    brk_rows, paths = [], {}
+    brk_rows = []
     for y, hist in [("dDGS2", "Dhist_short"), ("dDGS10", "Dhist")]:
         path = weekly_break(w, y, hist)
-        paths[y] = path["wald"]
         top = path["wald"].idxmax()
         sup = path.loc[top, "wald"]
         brk_rows.append({"dependent": y, "sup-Wald": sup, "p-value": (cv["draws"] >= sup).mean(),
@@ -184,7 +183,6 @@ def run_weekly() -> None:
 
     main_tab.to_csv(RESULTS / "robust_weekly_main.csv", index=False)
     brk.to_csv(RESULTS / "robust_weekly_break.csv")
-    pd.DataFrame(paths).to_csv(RESULTS / "robust_weekly_break_path.csv")
     regime.to_csv(RESULTS / "robust_weekly_regime.csv", index=False)
 
     pd.set_option("display.width", 220)
@@ -364,7 +362,7 @@ def run_phase_split() -> pd.DataFrame:
 
 
 def main() -> None:
-    RESULTS.mkdir(exist_ok=True)
+    RESULTS.mkdir(parents=True, exist_ok=True)
     run_weekly()
     run_event_exclusion()
     run_phase_split()

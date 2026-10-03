@@ -8,7 +8,7 @@ descriptive.py
     4. 長期時間序列圖：Brent 與 2 年、10 年期殖利率，標出衝擊期間
 
 輸入：data/oil_bond_data.xlsx、data/prepared.csv、data/episodes.csv
-輸出：results/descriptive_*.csv、figures/long_run.png
+輸出：results/description/descriptive_*.csv、figures/long_run.png
 """
 
 from pathlib import Path
@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-RESULTS, FIGS = ROOT / "results", ROOT / "figures"
+RESULTS, FIGS = ROOT / "results" / "description", ROOT / "figures"
 
 VARS = {"dDGS2": "2y (bp)", "dDGS10": "10y (bp)", "dOil": "Brent (%)", "dEq": "NASDAQ (%)"}
 
@@ -115,7 +115,7 @@ def main() -> None:
     eps = pd.read_csv(ROOT / "data" / "episodes.csv", parse_dates=["start", "end"])
     eps = eps[eps.role.isin(["hist", "study"]) & ~eps.dropped_no_shock]
 
-    RESULTS.mkdir(exist_ok=True)
+    RESULTS.mkdir(parents=True, exist_ok=True)
     stats = summary_by_period(df)
     corr = correlations(df)
     ep = episode_summary(raw, eps)

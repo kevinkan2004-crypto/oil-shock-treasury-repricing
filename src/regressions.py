@@ -1,20 +1,19 @@
 """
 regressions.py
-Tier 1 迴歸分析（研究大綱第四部分與 5.1）。
+主要迴歸分析（研究大綱第四部分）。
 
     1. 主要迴歸：DGS2、DGS10（DGS30 與曲線斜率為附帶結果）
     2. 10 年期 ACM 拆解：ACMY10、ACMRNY10、ACMTP10
-    3. 歸因：超額敏感度來自政策預期還是期限溢價
-    4. 各期間 beta（描述性）
-    5. 滾動 beta（252 日視窗）
-    6. 新常態比較：以 2022-03-17 為主要起點；結構性斷點檢定（sup-Wald）與斷點日期版本作為輔助證據
+    3. 各期間 beta（描述性）
+    4. 滾動 beta（252 日視窗）
+    5. 新常態比較：以 2022-03-17 為主要起點；結構性斷點檢定（sup-Wald）與斷點日期版本作為輔助證據
 
 標準誤：Newey-West（Bartlett kernel，10 期落後，含 n/(n-k) 小樣本修正）。
 OLS 以 numpy 實作，避免額外套件依賴；結果與 statsmodels 的
 OLS(...).fit(cov_type="HAC", cov_kwds={"maxlags": 10}) 一致。
 
 輸入：data/prepared.csv（由 prepare.py 產生）
-輸出：results/*.csv
+輸出：results/main/*.csv
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ from scipy import stats
 
 ROOT = Path(__file__).resolve().parents[1]
 PREPARED = ROOT / "data" / "prepared.csv"
-RESULTS = ROOT / "results"
+RESULTS = ROOT / "results" / "main"
 
 HAC_LAGS = 10
 ROLL_WINDOW = 252
@@ -145,22 +144,8 @@ def main_regressions(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, OLSResul
     return pd.DataFrame(rows).set_index("dependent"), fits
 
 
-def attribution(table: pd.DataFrame) -> pd.DataFrame:
-    """RNY + TP = ACMY，所以兩個超額敏感度相加等於 ACMY10 的超額敏感度。"""
-    col = "2026 excess vs hist (bp/10%)"
-    total = table.loc["dACMY10", col]
-    rny, tp = table.loc["dACMRNY10", col], table.loc["dACMTP10", col]
-    out = pd.DataFrame({
-        "excess (bp/10%)": [rny, tp, rny + tp, total],
-        "share of ACMY10 excess": [rny / total, tp / total, (rny + tp) / total, 1.0],
-    }, index=["Policy expectations (RNY)", "Term premium (TP)", "Sum", "ACMY10"])
-    if abs(total) < table.loc["dACMY10", "excess SE"]:
-        out["note"] = "total excess within 1 SE of zero: read bp values, not shares"
-    return out
-
-
 # ----------------------------------------------------------------------------
-# 結構性斷點檢定（sup-Wald，Andrews 1993）與斷點後的比較
+# 結構性斷點檢定（sup-Wald，Andrews 1993）與新常態比較
 # ----------------------------------------------------------------------------
 BREAK_SAMPLE = ("2016-01-01", "2026-02-27")   # 第一段零利率結束後至開戰前最後一個交易日
 BREAK_TRIM = 0.15                             # 頭尾各排除 15%
@@ -326,10 +311,9 @@ def rolling_band(roll: pd.DataFrame) -> pd.DataFrame:
 
 def main() -> None:
     df = pd.read_csv(PREPARED, index_col=0, parse_dates=True)
-    RESULTS.mkdir(exist_ok=True)
+    RESULTS.mkdir(parents=True, exist_ok=True)
 
     table, _ = main_regressions(df)
-    attr = attribution(table)
     eps = episode_betas(df)
     roll = rolling_betas(df)
     band = rolling_band(roll)
@@ -341,7 +325,6 @@ def main() -> None:
     regime_break = regime_robustness(df, break_date)        # 輔助：斷點日期
 
     table.to_csv(RESULTS / "main_regressions.csv")
-    attr.to_csv(RESULTS / "acm_attribution.csv")
     eps.to_csv(RESULTS / "episode_betas.csv")
     roll.to_csv(RESULTS / "rolling_betas.csv")
     band.to_csv(RESULTS / "rolling_band.csv")
@@ -356,8 +339,6 @@ def main() -> None:
             "p one-sided (2026 > hist)", "nobs"]
     print("== 主要迴歸：油價漲 10% 對應的殖利率變動（bp）==")
     print(table[cols].round(2).to_string())
-    print("\n== 10 年期 ACM 歸因 ==")
-    print(attr.round(2).to_string())
     print("\n== 各期間 beta（描述性）==")
     print(eps.round(2).to_string())
     print("\n== 滾動 beta 歷史區間（排除零利率與 2026）==")

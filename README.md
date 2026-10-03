@@ -2,7 +2,7 @@
 
 **Oil Supply Shocks and Treasury Yield Sensitivity: Evidence from the 2026 US–Iran War**
 
-[![Update data](https://github.com/<your-username>/oil-shock-treasury-repricing/actions/workflows/update_data.yml/badge.svg)](https://github.com/<your-username>/oil-shock-treasury-repricing/actions/workflows/update_data.yml)
+[![Update data](https://github.com/kevinkan2004/oil-shock-treasury-repricing/actions/workflows/update_data.yml/badge.svg)](https://github.com/kevinkan2004/oil-shock-treasury-repricing/actions/workflows/update_data.yml)
 
 During the 2026 oil shock, do Treasury yields react more to oil than they did in past supply shocks? If so, does the excess come from policy expectations (the short end) or from the term premium (the long end)?
 

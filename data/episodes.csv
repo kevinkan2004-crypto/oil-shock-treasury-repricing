@@ -5,6 +5,6 @@ Libyan civil war,2011-02-15,hist,True,https://en.wikipedia.org/wiki/Libyan_civil
 Abqaiq attack,2019-09-14,hist,False,https://en.wikipedia.org/wiki/Abqaiq%E2%80%93Khurais_attack,2019-09-16,2019-10-02,reverted,13,61.25,68.42,11.706122448979595,False
 Russia invades Ukraine,2022-02-24,hist,False,https://en.wikipedia.org/wiki/Russo-Ukrainian_war_(2022%E2%80%93present),2022-02-24,2022-08-18,reverted,122,99.29,133.18,34.1323396112398,False
 Twelve-Day War,2025-06-13,hist,False,https://en.wikipedia.org/wiki/Twelve-Day_War,2025-06-13,2025-06-27,reverted,11,70.84,80.37,13.452851496329753,False
-US-Iran war,2026-02-28,study,False,https://en.wikipedia.org/wiki/Timeline_of_the_2026_Iran_war,2026-03-02,2026-09-29,ongoing,147,71.32,138.21,93.78855860908584,False
+US-Iran war,2026-02-28,study,False,https://en.wikipedia.org/wiki/Timeline_of_the_2026_Iran_war,2026-03-02,2026-10-06,ongoing,152,71.32,138.21,93.78855860908584,False
 Hurricanes Katrina and Rita,2005-08-29,excluded,False,fails criterion 4,2005-08-29,2005-09-02,reverted,5,66.23,66.8,0.8606371734863227,True
 Libyan civil war 2014-2020,2014-05-16,excluded,False,fails criteria 2-3,2014-05-16,2014-05-30,reverted,11,109.74,111.32,1.43976672134134,False
